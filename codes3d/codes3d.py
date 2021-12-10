@@ -7,7 +7,6 @@ import argparse
 import configparser
 import multiprocessing
 import time
-import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
 import tqdm
@@ -157,7 +156,7 @@ def parse_hic(
             [c.upper() for c in include_cell_line])]
     elif exclude_cell_line and len(exclude_cell_line) > 0:
         validate_input(exclude_cell_line, df['library'])
-        hic_df = df[~df['library'].str.upper().isin(
+        hic_df = df[df['library'].str.upper().isin(
             [c.upper() for c in exclude_cell_line])]
     else:
         hic_df = df
@@ -186,17 +185,15 @@ def validate_input(input_params, params):
 
 def calc_afc(eqtl_df, genotypes_fp, expression_dir, covariates_dir,
              eqtl_project, output_dir, fdr_threshold,  bootstrap, num_processes):
-    
-    if 'adj_pval' in eqtl_df.columns: # Exclude non-significant eQTLs.
-        eqtl_df = eqtl_df[eqtl_df['adj_pval'] <= fdr_threshold]
-    if eqtl_df.empty:
+    sig_eqtl_df = eqtl_df[eqtl_df['adj_pval'] <= fdr_threshold]
+    if sig_eqtl_df.empty:
         print('Warning: No significant eQTL associations found.\nExiting.')
         sys.exit()
-    eqtl_df = aFC.main(
-        eqtl_df, genotypes_fp, expression_dir, covariates_dir,
+    sig_eqtl_df = aFC.main(
+        sig_eqtl_df, genotypes_fp, expression_dir, covariates_dir,
         eqtl_project, output_dir, bootstrap, num_processes)
 
-    return eqtl_df
+    return sig_eqtl_df
 
 
 def list_eqtl_databases(db):
@@ -291,17 +288,18 @@ def correct_pvals(pval):
     return multitest.multipletests(pval, method='fdr_bh')[1]
 
 
-def map_gtex_cis_eqtls(
+
+def map_non_spatial_eqtls(
         snp_df,
         tissues,
-        C,
+        c,
         args,
         eqtl_project_db,
         logger):
     eqtl_df = eqtls.map_eqtls_non_spatial(
         snp_df,
         tissues,
-        C.eqtl_data_dir,
+        c.eqtl_data_dir,
         args.num_processes,
         eqtl_project_db,
         logger)
@@ -322,130 +320,16 @@ def map_gtex_cis_eqtls(
     cols = ['snp', 'variant_id', 'gene', 'gencode_id',
             'pval_nominal', 'slope', 'slope_se', 'pval_nominal_threshold','min_pval_nominal', 'pval_beta',
             'tss_distance', 'maf', 'gene_chrom', 'gene_start', 'gene_end']
-
-    if not args.no_afc:
-        afc_start_time = time.time()
-        eqtl_df = calc_afc(
-            eqtl_df,
-            genotypes_fp,
-            expression_dir,
-            covariates_dir,
-            eqtl_project,
-            args.output_dir,
-            args.fdr_threshold,
-            args.afc_bootstrap,
-            args.num_processes)
-
     print(eqtl_df)
     eqtl_df[cols].to_csv(os.path.join(args.output_dir, 'non_spatial_eqtls.txt'), sep='\t', index=False)
     msg = 'Done.\nTotal time elasped: {:.2f} mins.'.format(
         (time.time() - start_time)/60)
     logger.write(msg)
     
-    
-    sys.exit()
-    
-    
-def map_non_spatial_eqtls(
-        snp_df,
-        gene_df,
-        tissues,
-        hic_df,
-        C,
-        args,
-        genotypes_fp,
-        eqtl_project_db,
-        commons_db,
-        covariates_dir,
-        expression_dir,
-        logger):
-    
-    gene_info_df = None
-    gene_list = None
-    if not snp_df.empty:
-        if args.gene_list is None:
-            print('No gene list given. Will map across all genes.')
-        else:
-            gene_info_df = genes.get_gene_info(
-                args.gene_list,
-                hic_df,
-                args.output_dir,
-                commons_db,
-                logger,
-                args.suppress_intermediate_files)
-            gene_info_df = gene_info_df.rename(columns={
-                'name': 'gene',
-                'chrom': 'gene_chrom',
-                'start': 'gene_start',
-                'end': 'gene_end'})
-            gene_list = gene_info_df['gencode_id'].drop_duplicates().tolist()
-    if not gene_df.empty:
-        gene_info_df = gene_df
-        gene_list = gene_info_df['gencode_id'].drop_duplicates().tolist()
-    if args.gtex_cis:
-        eqtl_df = eqtls.map_cis_eqtls_gtex(
-            snp_df,
-            gene_list,
-            tissues,
-            C.eqtl_data_dir,
-            args.num_processes,
-            eqtl_project_db,
-            logger)
-    else:
-        eqtl_df = eqtls.map_eqtls_non_spatial(
-            snp_df,
-            gene_list,
-            tissues,
-            args.output_dir,
-            args.maf_threshold,
-            C,
-            args.num_processes,
-            genotypes_fp,
-            eqtl_project_db,
-            covariates_dir,
-            expression_dir,
-            logger)
-    if gene_info_df is None:
-        gene_info_df = genes.get_gene_by_gencode(
-            eqtl_df.rename(columns={'gene_id': 'gene'}),
-            commons_db)[0]
-        gene_info_df = pd.concat(gene_info_df).rename(
-            columns = {
-                'name': 'gene',
-                'chrom': 'gene_chrom',
-                'start': 'gene_start',
-                'end': 'gene_end'}).drop(
-                    columns = ['id'])
-    if snp_df.empty:
-        snp_df = snps.find_snp_by_variant_id(
-            eqtl_df[['variant_id']].drop_duplicates(), eqtl_project_db)[0]
-        #snp_df = pd.concat(snp_df)
-        snp_df = snp_df.rename(columns={'rsid': 'snp'})
-    gene_info_df = gene_info_df.rename(columns={
-        'name': 'gene',
-        'chrom': 'gene_chrom',
-        'start': 'gene_start',
-        'end': 'gene_end'})
-    eqtl_df = eqtl_df.merge(
-        gene_info_df, how = 'inner',
-        left_on = ['phenotype_id'], right_on = ['gencode_id']).drop_duplicates()
-    snp_df = snp_df.rename(columns={
-        'chrom': 'snp_chrom',
-        'locus': 'snp_locus'})
-    eqtl_df = eqtl_df.merge(snp_df, how = 'left',
-                            on=['variant_id'])
-    cols = ['snp', 'variant_id', 'gene', 'gencode_id', 'tissue',
-            'pval', 'b', 'b_se', 
-            'snp_chrom', 'snp_locus', 'maf',
-            'gene_chrom', 'gene_start', 'gene_end']
-    eqtl_df = eqtl_df[cols].drop_duplicates()
-    eqtl_project = tissues['project'].iloc[0]
+    '''
+    TODO: Implement aFC
     if not args.no_afc:
         afc_start_time = time.time()
-        eqtl_df['sid'] = eqtl_df['variant_id']
-        eqtl_df['sid_chr'] = eqtl_df['snp_chrom']
-        eqtl_df['sid_pos'] = eqtl_df['snp_locus']
-        eqtl_df['pid'] = eqtl_df['gencode_id']
         eqtl_df = calc_afc(
             eqtl_df,
             genotypes_fp,
@@ -456,24 +340,18 @@ def map_non_spatial_eqtls(
             args.fdr_threshold,
             args.afc_bootstrap,
             args.num_processes)
-        cols += ['log2_aFC', 'log2_aFC_lower', 'log2_aFC_upper']
-    fp = os.path.join(args.output_dir, 'non_spatial_eqtls.txt') 
-    eqtl_df[cols].to_csv(fp, sep='\t', index=False)
-    logger.write(f'Output written to {fp}')
-    msg = 'Done.\nTotal time elasped: {:.2f} mins.'.format(
-        (time.time() - start_time)/60)
-    logger.write(msg)    
+    '''
+    
     sys.exit()
 
 def map_spatial_eqtls(
         snp_list,
-        C,
+        c,
         hic_df,
         args,
         logger,
         commons_db,
         tissues,
-        genotypes_fp,
         eqtl_project_db,
         covariates_dir,
         expression_dir):
@@ -495,7 +373,7 @@ def map_spatial_eqtls(
         batch_interactions_df = interactions.find_interactions(
             batch_snp_df,
             'snp',
-            C.lib_dir,
+            c.lib_dir,
             hic_df,
             # batch_output_dir,
             args.num_processes,
@@ -511,9 +389,6 @@ def map_spatial_eqtls(
         batch_eqtl_df = eqtls.map_eqtls(
             batch_gene_df,
             tissues,
-            args.output_dir,
-            C,
-            genotypes_fp,
             args.num_processes,
             eqtl_project_db,
             covariates_dir,
@@ -577,8 +452,6 @@ class CODES3D:
         self.rs_merge_arch_fp = os.path.join(
             os.path.dirname(__file__), config.get("Defaults", "RS_MERGE_ARCH"))
         self.host = config.get("postgresql", "host")
-        self.plink = os.path.join(
-            os.path.dirname(__file__), "plink2")
         self.commons_db = config.get("postgresql", "database")
         self.user = config.get("postgresql", "user")
         self.password = config.get("postgresql", "password")
@@ -618,6 +491,8 @@ def parse_args():
     parser.add_argument(
         '-o', '--output-dir',
         help='The directory in which to output results.')
+    parser.add_argument(
+        '-fs', '--features', action='store_true', default=False, help='epigenetic features that overlaps with the input SNPs')
     parser.add_argument(
         '--multi-test', default = 'multi',
         help='''Options for BH multiple-testing: ['snp', 'tissue', 'multi'].
@@ -672,7 +547,7 @@ def parse_args():
     parser.add_argument(
         '-t', '--tissues', nargs='+',
         help='''Space-separated list of eQTL tissues to query.
-        Note that tissues are case-sensitive and must be from the same eQTL projects.
+        Note that tissues must be from the same eQTL projects.
         Default is all tissues from the GTEx project.
         Use 'codes3d.py --list-eqtl-tissues' for a list of installed tissues.''')
     parser.add_argument(
@@ -721,15 +596,7 @@ def parse_args():
     parser.add_argument(
         '--non-spatial', action='store_true', default=False,
         help='Map non-spatial eQTLs.')
-    parser.add_argument(
-        '--gene-list', nargs='+', default=None,
-        help='List of genes for non-spatial eQTL mapping.')
-    parser.add_argument(
-        '--gtex-cis', action='store_true', default=False,
-        help='''Retrieve spatially unconstrained cis-eQTLs as calculated in GTEx.
-        To be used in combination with 'non-spatial'. ''')
 
-    
     return parser.parse_args()
 
 def validate_args(args, commons_db):
@@ -757,11 +624,8 @@ def validate_args(args, commons_db):
        (args.snp_input and args.snps_within_gene)or \
        (args.gene_input and args.snps_within_gene):
         sys.exit('''FATAL: Use only one of --snp-input, --gene-input, or --gene-out''')
-
-        
+    
 def log_settings(args, logger):
-    now = datetime.datetime.now()
-    logger.write(f'{now.strftime("%d/%m/%Y %H:%M:%S")}')
     mode = 'SNP'
     if args.gene_input:
         mode = 'Gene'
@@ -781,31 +645,29 @@ def log_settings(args, logger):
     logger.write(f'Effect size:\t{effect_size}')
     if not args.match_tissues and not args.include_cell_lines and \
        not args.exclude_cell_lines:
-        if not args.non_spatial:
-            logger.write('Hi-C libraries:\tAll libraries in database')
+        logger.write('Hi-C libraries:\tAll libraries in database')
     else:
-        if not args.non_spatial:
-            logger.write('Hi-C libraries:\t{}'.format(
-                ', '.join(hic_df['library'].tolist())))
+        logger.write('Hi-C libraries:\t{}'.format(
+            ', '.join(hic_df['library'].tolist())))
     if not args.tissues and not args.match_tissues:
         logger.write('eQTL tissues:\tAll tissues in database\n')
     else:
         logger.write('\neQTL tissues:\t{}\n'.format(
             ', '.join(tissues['name'].tolist())))
-    if args.snp_input:
-        logger.write(f'--snp-input:\t{", ".join(args.snp_input)}')
-    if args.gene_input:
-        logger.write(f'--gene-input:\t{", ".join(args.gene_input)}')
-    if args.snps_within_gene:
-        logger.write(f'--snps-within-gebe:\t{args.snps_within_gene}')
-    logger.write('\n')
-
-
-        
+    if args.match_tissues:
+        upsert = input(
+            '''WARNING: We've tried to match your Hi-C and eQTL tissues above.
+            Continue? [y/N]'''
+        )
+        if not upsert.lower() == 'y':
+            print(('Use -t and -n to include specific eQTL tissues'
+                   ' and Hi-C libraries'))
+            sys.exit('Exiting.')
+    
 if __name__ == '__main__':
     args = parse_args()
-    C = CODES3D(args.config)
-    commons_db = create_engine(C.commons_db_url, echo=False, poolclass=NullPool)
+    c = CODES3D(args.config)
+    commons_db = create_engine(c.commons_db_url, echo=False, poolclass=NullPool)
     validate_args(args, commons_db)
     
     if not os.path.isdir(args.output_dir):
@@ -821,21 +683,6 @@ if __name__ == '__main__':
         args.exclude_cell_lines,
         args.restriction_enzymes,
         commons_db)
-    if args.match_tissues and not args.non_spatial:
-        logger.write('Hi-C libraries:\t{}'.format(
-            ', '.join(hic_df['library'].tolist())))
-        logger.write('\neQTL tissues:\t{}\n'.format(
-            ', '.join(tissues['name'].tolist())))
-        
-        upsert = input(
-            '''WARNING: We've tried to match your Hi-C and eQTL tissues above.
-            Continue? [y/N]'''
-        )
-        if not upsert.lower() == 'y':
-            print(('Use -t and -n to include specific eQTL tissues'
-                   ' and Hi-C libraries'))
-            sys.exit('Exiting.')
-
     log_settings(args, logger)
 
     eqtl_project = tissues['project'].tolist()[0]
@@ -850,7 +697,7 @@ if __name__ == '__main__':
     expression_table_fp = os.path.join(
         os.path.dirname(__file__), config.get(eqtl_project, 'GENE_FP'))
     eqtl_project_db = create_engine(
-        C.eqtl_db_url.format(eqtl_project.lower()), echo=False, poolclass=NullPool)
+        c.eqtl_db_url.format(eqtl_project.lower()), echo=False, poolclass=NullPool)
     snp_df = pd.DataFrame()
     gene_df = []
     eqtl_df = []
@@ -862,24 +709,10 @@ if __name__ == '__main__':
             commons_db,
             logger,
             args.suppress_intermediate_files)
-        if args.non_spatial:
-            map_non_spatial_eqtls(
-                pd.DataFrame(),
-                gene_info_df,
-                tissues,
-                hic_df,
-                C,
-                args,
-                genotypes_fp,
-                eqtl_project_db,
-                commons_db,
-                covariates_dir,
-                expression_dir,
-                logger)
         interactions_df = interactions.find_interactions(
             gene_info_df,
             'gencode_id',
-            C.lib_dir,
+            c.lib_dir,
             hic_df,
             #args.output_dir,
             args.num_processes,
@@ -890,8 +723,6 @@ if __name__ == '__main__':
             gene_info_df,
             tissues,
             args.output_dir,
-            C,
-            genotypes_fp,
             eqtl_project_db,
             covariates_dir,
             expression_dir,
@@ -928,38 +759,30 @@ if __name__ == '__main__':
             hic_df,
             args.output_dir,
             eqtl_project_db,
-            C.rs_merge_arch_fp,
+            c.rs_merge_arch_fp,
             logger,
             args.suppress_intermediate_files)
         if not args.suppress_intermediate_files:
             snp_df.to_csv(os.path.join(
                 args.output_dir, 'snps.txt'), sep='\t', index=False)
         snp_list = snp_df['snp'].drop_duplicates().tolist()
-                
         if args.non_spatial:
             map_non_spatial_eqtls(
                 snp_df,
-                pd.DataFrame(),
                 tissues,
-                hic_df,
-                C,
+                c,
                 args,
-                genotypes_fp,
                 eqtl_project_db,
-                commons_db,
-                covariates_dir,
-                expression_dir,
                 logger)
         else:
             gene_df, eqtl_df = map_spatial_eqtls(
                 snp_list,
-                C,
+                c,
                 hic_df,
                 args,
                 logger,
                 commons_db,
                 tissues,
-                genotypes_fp,
                 eqtl_project_db,
                 covariates_dir,
                 expression_dir)
@@ -994,6 +817,3 @@ if __name__ == '__main__':
     msg = 'Done.\nTotal time elasped: {:.2f} mins.'.format(
         (time.time() - start_time)/60)
     logger.write(msg)
-    now = datetime.datetime.now()
-    now = now.strftime("%d/%m/%Y %H:%M:%S")
-    logger.write(f'{now}')
