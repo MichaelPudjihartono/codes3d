@@ -22,7 +22,7 @@ def feature_intersect(inputs, output_dir, logger):   #inputs is specified as snp
 	logger.write('---> Looking for intersections with H3K27ac peaks...')
     
     #1. read the H3K27ac reference file into a BedTool object
-	H3K27ac_bed = pybedtools.BedTool(os.path.join(os.path.dirname(__file__), '../reference_file2/GSM958157_UCSF-UBC.Penis_Foreskin_Melanocyte_Primary_Cells.H3K27ac.skin03.bed')) #Relative path from SNP_loading.py to the H3K27ac reference file
+	H3K27ac_bed = pybedtools.BedTool(os.path.join(os.path.dirname(__file__), '../reference_file2/E059-H3K27ac.broadPeak')) #Relative path from SNP_loading.py to the H3K27ac reference file
     
     #2. Intersect the 'a' file(snp_bed) with the 'b' file(reference file: H3K27ac bed), and save the output .bed file to the user-specified args.output_dir!
 	snp_bed.intersect(H3K27ac_bed, u=True).saveas(os.path.join(output_dir, 'snps_that_intersects_H3K27ac.bed'))
