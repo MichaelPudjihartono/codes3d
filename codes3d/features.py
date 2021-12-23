@@ -89,4 +89,4 @@ def feature_intersect(inputs, output_dir, logger):   #inputs is specified as snp
 			else:
 				snp_df.loc[index, 'DNase_hypersensitive'] = False
     
-	snp_df.to_csv(os.path.join(output_dir, 'snps_features.txt'), sep = '\t', index = False)
+	return snp_df
